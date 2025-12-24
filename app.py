@@ -4,7 +4,7 @@ import re
 import io
 import altair as alt
 
-st.set_page_config(page_title="PMS Live Vessel Checker", page_icon="🚢", layout="wide")
+st.set_page_config(page_title="PMS Live Vessel e-Form Checker", page_icon="🚢", layout="wide")
 
 def highlight_count_gt_1(val):
     if isinstance(val, (int, float)) and val > 1:
@@ -295,7 +295,7 @@ def create_excel_output(pms_live, eg_final, eg_summary, eg_details, eg_missing, 
     output.seek(0)
     return output
 
-st.title("🚢 PMS Live Vessel Checker")
+st.title("🚢 PMS Live Vessel e-form Checker")
 st.markdown("Upload your files to process and generate the final vessel checklist report.")
 
 st.header("📁 Upload Files")
@@ -610,3 +610,4 @@ if st.session_state.get('processed', False):
 
 else:
     st.info("👆 Please upload all three files above to begin processing.")
+
