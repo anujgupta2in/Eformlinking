@@ -4,7 +4,7 @@ import re
 import io
 import altair as alt
 
-st.set_page_config(page_title="PMS Live Vessel e-Form Checker", page_icon="🚢", layout="wide")
+st.set_page_config(page_title="PMS Live Vessel Checker", page_icon="🚢", layout="wide")
 
 def highlight_count_gt_1(val):
     if isinstance(val, (int, float)) and val > 1:
@@ -31,8 +31,10 @@ def norm_name(s: str) -> str:
 def is_live(x) -> bool:
     if pd.isna(x):
         return False
+    if isinstance(x, (int, float)):
+        return x == 1 or x == 1.0
     s = str(x).strip().lower()
-    return s in {"1", "yes", "y", "true", "live", "pms live", "active"}
+    return s in {"1", "1.0", "yes", "y", "true", "live", "pms live", "active"}
 
 def join_unique(series) -> str:
     vals = [str(v).strip() for v in series.dropna().unique() if str(v).strip() != ""]
@@ -57,21 +59,42 @@ def detect_critical(job_df: pd.DataFrame) -> pd.Series:
     return job_df.apply(heuristic, axis=1)
 
 def build_pms_live(jibe_file) -> pd.DataFrame:
-    raw = pd.read_excel(jibe_file, sheet_name="Sheet1", header=1)
+    xl = pd.ExcelFile(jibe_file)
+    sheet_name = xl.sheet_names[0]
     
-    new_cols = raw.iloc[0].tolist()
-    df = raw.iloc[1:].copy()
-    df.columns = [str(c).strip() for c in new_cols]
-
-    pms_col = "PMS" if "PMS" in df.columns else next((c for c in df.columns if "pms" in c.lower()), None)
-    if not pms_col:
-        raise ValueError("Could not find PMS column in JiBe List file.")
-
-    df["PMS_live"] = df[pms_col].apply(is_live)
-
-    cols_keep = [c for c in ["Fleet", "Group Owner", "Vessel Name", "JiBe Go-Live Date", pms_col] if c in df.columns]
-    pms_live = df.loc[df["PMS_live"], cols_keep].copy()
-    pms_live = pms_live.rename(columns={pms_col: "PMS"})
+    df = pd.read_excel(xl, sheet_name=sheet_name, header=0)
+    df.columns = [str(c).strip() for c in df.columns]
+    
+    vessel_col = None
+    for c in df.columns:
+        c_lower = str(c).lower()
+        if 'vessel name' in c_lower or c_lower == 'vessel':
+            vessel_col = c
+            break
+    
+    pms_col = None
+    for c in df.columns:
+        c_lower = str(c).lower()
+        if c_lower == 'pms':
+            pms_col = c
+            break
+    
+    if not vessel_col:
+        raise ValueError(f"Could not find Vessel column in JiBe List file. Available columns: {list(df.columns)}")
+    
+    if pms_col:
+        df["PMS_live"] = df[pms_col].apply(is_live)
+        cols_keep = [c for c in ["Fleet", "Group Owner", vessel_col, "JiBe Go-Live Date", pms_col] if c in df.columns]
+        pms_live = df.loc[df["PMS_live"], cols_keep].copy()
+        pms_live = pms_live.rename(columns={pms_col: "PMS"})
+    else:
+        df["PMS_live"] = True
+        cols_keep = [c for c in ["Fleet", "Group Owner", vessel_col, "JiBe Go-Live Date"] if c in df.columns]
+        pms_live = df[cols_keep].copy()
+        pms_live["PMS"] = "Live"
+    
+    if vessel_col != "Vessel Name":
+        pms_live = pms_live.rename(columns={vessel_col: "Vessel Name"})
 
     if EXCLUDE_OOM_VESSELS and "Vessel Name" in pms_live.columns:
         pms_live = pms_live[~pms_live["Vessel Name"].astype(str).str.contains(r"\(OOM\)", na=False)].copy()
@@ -80,7 +103,10 @@ def build_pms_live(jibe_file) -> pd.DataFrame:
         pms_live["JiBe Go-Live Date"] = pd.to_datetime(pms_live["JiBe Go-Live Date"], errors="coerce").dt.date
 
     pms_live["Vessel_norm"] = pms_live["Vessel Name"].apply(norm_name)
-    return pms_live.sort_values(["Fleet", "Vessel Name"], na_position="last")
+    sort_cols = [c for c in ["Fleet", "Vessel Name"] if c in pms_live.columns]
+    if sort_cols:
+        return pms_live.sort_values(sort_cols, na_position="last")
+    return pms_live
 
 def detect_machinery_type(emg_file, filename=None):
     emg_file.seek(0)
@@ -195,10 +221,10 @@ def detect_job_code(job_file, filename=None):
 def check_job_code(pms_live: pd.DataFrame, job_file, job_code: str):
     job = pd.read_csv(job_file)
 
-    required_cols = {"Vessel", "Job Code", "Frequency", "Frequency Type"}
+    required_cols = {"Vessel", "Job Code"}
     missing = required_cols - set(job.columns)
     if missing:
-        raise ValueError(f"Job List CSV missing required columns: {missing}")
+        raise ValueError(f"Job Status CSV missing required columns: {missing}")
 
     job["Vessel_norm"] = job["Vessel"].apply(norm_name)
 
@@ -207,12 +233,19 @@ def check_job_code(pms_live: pd.DataFrame, job_file, job_code: str):
 
     job_filtered["Is Critical"] = detect_critical(job_filtered)
 
-    agg = job_filtered.groupby("Vessel_norm").agg(
-        Job_Linked=("Job Code", "count"),
-        Frequency=("Frequency", join_unique),
-        Frequency_Type=("Frequency Type", join_unique),
-        Critical_Flag=("Is Critical", "any"),
-    ).reset_index()
+    agg_dict = {
+        "Job_Linked": ("Job Code", "count"),
+        "Critical_Flag": ("Is Critical", "any"),
+    }
+    
+    if "Frequency" in job.columns:
+        agg_dict["Frequency"] = ("Frequency", join_unique)
+    if "Frequency Type" in job.columns:
+        agg_dict["Frequency_Type"] = ("Frequency Type", join_unique)
+    if "Job Status" in job.columns:
+        agg_dict["Job_Status"] = ("Job Status", join_unique)
+    
+    agg = job_filtered.groupby("Vessel_norm").agg(**agg_dict).reset_index()
 
     base = pms_live[["Fleet", "Group Owner", "Vessel Name", "JiBe Go-Live Date", "PMS", "Vessel_norm"]].copy()
     check = base.merge(agg, on="Vessel_norm", how="left")
@@ -295,7 +328,7 @@ def create_excel_output(pms_live, eg_final, eg_summary, eg_details, eg_missing, 
     output.seek(0)
     return output
 
-st.title("🚢 PMS Live Vessel e-form Checker")
+st.title("🚢 PMS Live Vessel Checker")
 st.markdown("Upload your files to process and generate the final vessel checklist report.")
 
 st.header("📁 Upload Files")
@@ -321,12 +354,12 @@ with col2:
     )
 
 with col3:
-    st.subheader("Job List Vessels")
+    st.subheader("Job Status")
     job_file = st.file_uploader(
-        "Upload Job List (CSV)",
+        "Upload Job Status (CSV)",
         type=["csv"],
         key="job",
-        help="CSV file with columns: Vessel, Job Code, Frequency, Frequency Type"
+        help="CSV file with columns: Vessel, Job Code, Frequency, Job Status, E-Form"
     )
 
 st.divider()
@@ -460,18 +493,18 @@ if st.session_state.get('processed', False):
         else:
             st.info("No job data available.")
     
-    st.subheader("Frequency Distribution (Combined)")
+    st.subheader("Frequency Distribution")
     
-    if job_check is not None:
-        freq_data = job_check[['Frequency', 'Frequency_Type']].copy()
+    if job_check is not None and 'Frequency' in job_check.columns:
+        has_freq_type = 'Frequency_Type' in job_check.columns
         
         combined_freqs = []
-        for idx, row in freq_data.iterrows():
-            freq_val = str(row['Frequency']) if pd.notna(row['Frequency']) else ''
-            freq_type_val = str(row['Frequency_Type']) if pd.notna(row['Frequency_Type']) else ''
+        for idx, row in job_check.iterrows():
+            freq_val = str(row['Frequency']) if pd.notna(row.get('Frequency')) else ''
+            freq_type_val = str(row['Frequency_Type']) if has_freq_type and pd.notna(row.get('Frequency_Type')) else ''
             
             freq_items = [f.strip() for f in freq_val.split('|') if f.strip()]
-            type_items = [t.strip() for t in freq_type_val.split('|') if t.strip()]
+            type_items = [t.strip() for t in freq_type_val.split('|') if t.strip()] if freq_type_val else []
             
             if freq_items and type_items:
                 for i in range(max(len(freq_items), len(type_items))):
@@ -610,4 +643,3 @@ if st.session_state.get('processed', False):
 
 else:
     st.info("👆 Please upload all three files above to begin processing.")
-
