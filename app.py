@@ -12,11 +12,11 @@ def highlight_count_gt_1(val):
     return ''
 
 def style_eg_summary(df):
-    return df.style.applymap(highlight_count_gt_1, subset=['EG_Count'])
+    return df.style.map(highlight_count_gt_1, subset=['EG_Count'])
 
 def style_job_check(df):
     if 'Job_Linked' in df.columns:
-        return df.style.applymap(highlight_count_gt_1, subset=['Job_Linked'])
+        return df.style.map(highlight_count_gt_1, subset=['Job_Linked'])
     return df
 
 EXCLUDE_OOM_VESSELS = True
@@ -619,7 +619,7 @@ if st.session_state.get('processed', False):
     with tabs[tab_idx]:
         eg_sum_display = st.session_state['eg_summary'].copy()
         if count_col in eg_sum_display.columns:
-            styled_eg = eg_sum_display.style.applymap(highlight_count_gt_1, subset=[count_col])
+            styled_eg = eg_sum_display.style.map(highlight_count_gt_1, subset=[count_col])
             st.dataframe(styled_eg, use_container_width=True)
         else:
             st.dataframe(eg_sum_display, use_container_width=True)
@@ -637,7 +637,7 @@ if st.session_state.get('processed', False):
         with tabs[tab_idx]:
             job_check_display = job_check.copy()
             job_check_display['Job_Linked'] = job_check_display['Job_Linked'].fillna(0).astype(int)
-            styled_job = job_check_display.style.applymap(highlight_count_gt_1, subset=['Job_Linked'])
+            styled_job = job_check_display.style.map(highlight_count_gt_1, subset=['Job_Linked'])
             st.dataframe(styled_job, use_container_width=True)
         tab_idx += 1
 
